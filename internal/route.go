@@ -28,7 +28,7 @@ func Routes(e *echo.Echo) {
 
 	// Route for OpenAPI / Swagger
 	// ---------------------------------------------
-	e.GET(router.BaseURL+"/docs/*", eSwagger.WrapHandler)
+	e.GET(router.BaseURL+"/docs/*", eSwagger.EchoWrapHandler(eSwagger.PersistAuthorization(true)))
 
 	// Route for Auth
 	// ---------------------------------------------

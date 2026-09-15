@@ -64,10 +64,19 @@ func init() {
 }
 
 func WhatsAppInitClient(device *store.Device, jid string) {
-	var err error
 	wabin.IndentXML = true
 
 	if WhatsAppClient[jid] == nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		latestVersion, err := whatsmeow.GetLatestVersion(ctx, nil)
+		cancel()
+		if err != nil {
+			log.Print(nil).Warn("Unable to fetch latest WhatsApp Web version: " + err.Error())
+		} else {
+			store.SetWAVersion(*latestVersion)
+			log.Print(nil).Info(fmt.Sprintf("Using WhatsApp Web version %d.%d.%d", latestVersion[0], latestVersion[1], latestVersion[2]))
+		}
+
 		if device == nil {
 			// Initialize New WhatsApp Client Device in Datastore
 			device = WhatsAppDatastore.NewDevice()
@@ -163,26 +172,39 @@ func WhatsAppGetUserOS() string {
 	}
 }
 
-func WhatsAppGenerateQR(qrChan <-chan whatsmeow.QRChannelItem) (string, int) {
-	qrChanCode := make(chan string)
-	qrChanTimeout := make(chan int)
+func WhatsAppGenerateQR(qrChan <-chan whatsmeow.QRChannelItem) (string, int, error) {
+	type qrResult struct {
+		code    string
+		timeout int
+	}
+
+	qrResultChan := make(chan qrResult, 1)
 
 	// Get QR Code Data and Timeout
 	go func() {
 		for evt := range qrChan {
+			log.Print(nil).Info("WhatsApp QR event received: " + evt.Event)
 			if evt.Event == "code" {
-				qrChanCode <- evt.Code
-				qrChanTimeout <- int(evt.Timeout.Seconds())
+				qrResultChan <- qrResult{
+					code:    evt.Code,
+					timeout: int(evt.Timeout.Seconds()),
+				}
+				return
 			}
 		}
 	}()
 
-	// Generate QR Code Data to PNG Image
-	qrTemp := <-qrChanCode
-	qrPNG, _ := qrCode.Encode(qrTemp, qrCode.Medium, 256)
+	select {
+	case result := <-qrResultChan:
+		qrPNG, err := qrCode.Encode(result.code, qrCode.Medium, 256)
+		if err != nil {
+			return "", 0, err
+		}
 
-	// Return QR Code PNG in Base64 Format and Timeout Information
-	return base64.StdEncoding.EncodeToString(qrPNG), <-qrChanTimeout
+		return base64.StdEncoding.EncodeToString(qrPNG), result.timeout, nil
+	case <-time.After(45 * time.Second):
+		return "", 0, errors.New("Timeout Waiting for WhatsApp QR Code")
+	}
 }
 
 func WhatsAppLogin(jid string) (string, int, error) {
@@ -202,7 +224,10 @@ func WhatsAppLogin(jid string) (string, int, error) {
 			}
 
 			// Get Generated QR Code and Timeout Information
-			qrImage, qrTimeout := WhatsAppGenerateQR(qrChanGenerate)
+			qrImage, qrTimeout, err := WhatsAppGenerateQR(qrChanGenerate)
+			if err != nil {
+				return "", 0, err
+			}
 
 			// Return QR Code in Base64 Format and Timeout Information
 			return "data:image/png;base64," + qrImage, qrTimeout, nil
